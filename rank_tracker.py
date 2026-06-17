@@ -126,27 +126,21 @@ def google_search_url(keyword, country, language, page):
 def sb_screenshot(api_key, keyword, country, language, page, out_path):
     """يلتقط سكرين شوت لصفحة نتائج جوجل المطلوبة ويحفظها PNG.
 
-    يجرّب أكثر من إعداد بالتسلسل، ويطبع رسالة الخطأ الكاملة من ScrapingBee
-    عند الفشل لتسهيل التشخيص. (السبب الشائع لـ 400 هو premium_proxy غير المتاح
-    في الباقة المجانية — لذلك لا نستخدمه افتراضياً.)
+    ScrapingBee يتطلب custom_google=true لاستهداف جوجل (يكلّف ~20 كريدت/صورة).
+    يطبع رسالة الخطأ الكاملة عند الفشل لتسهيل التشخيص.
     """
     search_url = google_search_url(keyword, country, language, page)
-    base = {
+    params = {
         "api_key": api_key,
         "url": search_url,
+        "custom_google": "true",      # مطلوب لاستهداف جوجل
         "render_js": "true",
         "screenshot_full_page": "true",
         "country_code": country,
         "window_width": "1366",
         "wait": "3500",
     }
-    # محاولات متدرّجة: عادي → بروكسي مميّز (إن كانت الباقة تدعمه)
-    attempts = [
-        dict(base),
-        {**base, "premium_proxy": "true"},
-        {**base, "screenshot_full_page": "false", "screenshot": "true"},
-    ]
-    for i, params in enumerate(attempts, 1):
+    for attempt in range(3):
         try:
             r = requests.get(SB_BASE, params=params, timeout=200)
             ct = r.headers.get("content-type", "")
@@ -155,10 +149,9 @@ def sb_screenshot(api_key, keyword, country, language, page, out_path):
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 out_path.write_bytes(r.content)
                 return True
-            print(f"  ⚠️ سكرين شوت (محاولة {i}) كود {r.status_code} نوع {ct} | {r.text[:300]}")
+            print(f"  ⚠️ سكرين شوت (محاولة {attempt+1}) كود {r.status_code} نوع {ct} | {r.text[:300]}")
         except Exception as e:
-            print(f"  ⚠️ خطأ سكرين شوت (محاولة {i}): {e}")
-        time.sleep(2)
+            print(f"  ⚠️ خطأ سكرين شوت (محاولة {attempt+1}): {e}")
         time.sleep(3 * (attempt + 1))
     return False
 
@@ -176,12 +169,12 @@ def write_sheet(sa_json, sheet_id, date_str, rows, now):
     if title in [w.title for w in sh.worksheets()]:
         title = f"{date_str} ({now.strftime('%H%M')})"
 
-    ws = sh.add_worksheet(title=title, rows=len(rows) + 6, cols=13)
+    ws = sh.add_worksheet(title=title, rows=len(rows) + 6, cols=11)
 
     headers = [
         "#", "الكلمة المفتاحية", "الحالة", "الصفحة", "الترتيب في الصفحة",
         "الترتيب الكلي", "الرابط الظاهر", "المركز الأول (منافس)",
-        "الصورة (معاينة)", "رابط الصورة", "رابط البحث (تحقّق يدوي)", "وقت الفحص",
+        "رابط البحث (تحقّق يدوي)", "وقت الفحص",
     ]
     values = [[f"تقرير ترتيب الموقع في جوجل — {date_str}"]]
     values.append(headers)
@@ -212,14 +205,6 @@ def write_sheet(sa_json, sheet_id, date_str, rows, now):
             "range": {"sheetId": sid, "startRowIndex": 2, "endRowIndex": 2 + len(rows)},
             "cell": {"userEnteredFormat": {"verticalAlignment": "MIDDLE", "wrapStrategy": "WRAP"}},
             "fields": "userEnteredFormat(verticalAlignment,wrapStrategy)"}},
-        # ارتفاع صفوف البيانات (لإظهار الصورة)
-        {"updateDimensionProperties": {
-            "range": {"sheetId": sid, "dimension": "ROWS", "startIndex": 2, "endIndex": 2 + len(rows)},
-            "properties": {"pixelSize": 210}, "fields": "pixelSize"}},
-        # عرض عمود الصورة
-        {"updateDimensionProperties": {
-            "range": {"sheetId": sid, "dimension": "COLUMNS", "startIndex": 8, "endIndex": 9},
-            "properties": {"pixelSize": 380}, "fields": "pixelSize"}},
         # عرض عمود الكلمة المفتاحية
         {"updateDimensionProperties": {
             "range": {"sheetId": sid, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 2},
@@ -227,11 +212,11 @@ def write_sheet(sa_json, sheet_id, date_str, rows, now):
         # عرض عمود الرابط
         {"updateDimensionProperties": {
             "range": {"sheetId": sid, "dimension": "COLUMNS", "startIndex": 6, "endIndex": 7},
-            "properties": {"pixelSize": 300}, "fields": "pixelSize"}},
+            "properties": {"pixelSize": 320}, "fields": "pixelSize"}},
         # عرض عمود رابط البحث (تحقّق يدوي)
         {"updateDimensionProperties": {
-            "range": {"sheetId": sid, "dimension": "COLUMNS", "startIndex": 10, "endIndex": 11},
-            "properties": {"pixelSize": 160}, "fields": "pixelSize"}},
+            "range": {"sheetId": sid, "dimension": "COLUMNS", "startIndex": 8, "endIndex": 9},
+            "properties": {"pixelSize": 170}, "fields": "pixelSize"}},
     ]}
     sh.batch_update(body)
     print(f"✅ تم إنشاء التبويب: {title}")
@@ -254,9 +239,10 @@ def main():
 
     now = datetime.now(RIYADH)
     date_str = now.strftime("%Y-%m-%d")
-    repo = os.environ.get("GITHUB_REPOSITORY", "USER/REPO")
-    branch = os.environ.get("GITHUB_REF_NAME", "main")
-    shots_dir = Path("screenshots") / date_str
+
+    # ملف نبضة يُحدّث كل تشغيل — يبقي جدولة GitHub نشطة (تتعطّل بعد 60 يوم خمول)
+    Path("last_run.txt").write_text(
+        now.strftime("%Y-%m-%d %H:%M (Asia/Riyadh)"), encoding="utf-8")
 
     print(f"🎯 الدومين المستهدف: {target} | الدولة: {country} | اللغة: {language} | الصفحات: {max_pages}")
     rows = []
@@ -283,30 +269,21 @@ def main():
             seen += len(results)
             time.sleep(1)
 
-        shot_page = found["page"] if found else 1
-        shot_file = shots_dir / f"kw{i:02d}.png"
-        ok = sb_screenshot(api_key, kw, country, language, shot_page, shot_file)
-        if ok:
-            raw = f"https://raw.githubusercontent.com/{repo}/{branch}/screenshots/{date_str}/kw{i:02d}.png"
-            img_cell = f'=IMAGE("{raw}",4,200,360)'
-            link_cell = f'=HYPERLINK("{raw}","🔗 فتح الصورة")'
-        else:
-            img_cell, link_cell = "تعذّر التقاط الصورة", ""
-
         if found:
             status = "✅ ظهر"
             page_v, rank_v, abs_v, url_v = found["page"], found["rank_in_page"], found["abs_pos"], found["url"]
+            shot_page = found["page"]
         else:
             status = f"❌ ما ظهر ضمن أول {max_pages} صفحات"
             page_v = rank_v = abs_v = url_v = "—"
+            shot_page = 1
 
-        # رابط بحث جوجل لنفس الصفحة التي ظهر فيها الموقع — للتحقق اليدوي في نافذة خاصة
+        # رابط بحث جوجل لنفس الصفحة — للتحقق اليدوي في نافذة خاصة (Incognito)
         verify_url = google_search_url(kw, country, language, shot_page)
         verify_cell = f'=HYPERLINK("{verify_url}","🔎 افتح بحث جوجل")'
 
         rows.append([i, kw, status, page_v, rank_v, abs_v, url_v,
-                     top_competitor or "—", img_cell, link_cell, verify_cell,
-                     now.strftime("%H:%M")])
+                     top_competitor or "—", verify_cell, now.strftime("%H:%M")])
         print(f"[{i}/{len(keywords)}] {kw} → {status}"
               + (f" (صفحة {page_v}، ترتيب كلي {abs_v})" if found else ""))
 
